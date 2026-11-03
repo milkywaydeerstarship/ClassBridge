@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ClassBridge — Live Translation for the Classroom",
+  title: "Classroom Bridge — Live Translation for the Classroom",
   description:
     "Speak once from your device. Every student in your code-protected room reads and hears it in their own language — live.",
 };

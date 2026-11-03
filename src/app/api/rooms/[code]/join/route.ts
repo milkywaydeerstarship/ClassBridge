@@ -3,6 +3,13 @@ import { db } from "@/db";
 import { rooms, presence } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
+function makeToken(len = 24): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let s = "";
+  for (let i = 0; i < len; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return s;
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ code: string }> }) {
   const { code } = await ctx.params;
   const normalized = (code ?? "").toUpperCase().trim();
@@ -13,18 +20,46 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ code: stri
       return NextResponse.json({ ok: false, error: "Room not found" }, { status: 404 });
     }
     const room = found[0];
+
+    if (room.isClosed) {
+      return NextResponse.json({ ok: false, error: "This room has been closed by the teacher." }, { status: 403 });
+    }
+
     if (room.pin) {
       const pin = String(body?.pin ?? "").trim();
       if (pin !== room.pin) {
         return NextResponse.json({ ok: false, error: "Incorrect room PIN" }, { status: 403 });
       }
     }
-    const displayName = String(body?.displayName ?? "Guest").slice(0, 80).trim() || "Guest";
+
+    const displayName = String(body?.displayName ?? "").slice(0, 80).trim();
+    if (!displayName) {
+      return NextResponse.json({ ok: false, error: "A name is required to join this room." }, { status: 400 });
+    }
+
     const langs = String(body?.langs ?? "en").slice(0, 120) || "en";
-    await db.insert(presence).values({ roomId: room.id, displayName, langs });
+    const participantKey = makeToken(24);
+
+    await db.insert(presence).values({
+      roomId: room.id,
+      displayName,
+      participantKey,
+      langs,
+      isHost: false,
+      isMuted: false,
+      isKicked: false,
+    });
+
     return NextResponse.json({
       ok: true,
-      room: { code: room.code, name: room.name, sourceLang: room.sourceLang, hasPin: !!room.pin },
+      participantKey,
+      room: {
+        code: room.code,
+        name: room.name,
+        sourceLang: room.sourceLang,
+        hasPin: !!room.pin,
+        isClosed: room.isClosed ?? false,
+      },
     });
   } catch (e) {
     console.error("join failed", e);

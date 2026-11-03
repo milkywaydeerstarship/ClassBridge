@@ -1,6 +1,6 @@
-# ClassBridge — Put it on a real website
+# Classroom Bridge — Put it on a real website
 
-ClassBridge is a standard Next.js app with a Postgres database. To use it as a
+Classroom Bridge is a standard Next.js app with a Postgres database. To use it as a
 public website you need two things:
 
 1. **Hosting for the app** (recommended: Vercel — free, HTTPS included)
@@ -16,7 +16,7 @@ request — you never run migrations by hand.
 
 ### 1. Get the code onto GitHub
 
-- Create a new repository at https://github.com/new (name it e.g. `classbridge`).
+- Create a new repository at https://github.com/new (name it e.g. `classroombridge`).
 - Push this project folder to it, or drag the files into the repo via
   GitHub's "upload files" screen. Don't upload the `node_modules` folder.
 
@@ -32,12 +32,12 @@ request — you never run migrations by hand.
 ### 3. Deploy the app (Vercel)
 
 1. Sign up at https://vercel.com ("Continue with GitHub").
-2. Click **Add New → Project** and pick your `classbridge` repository.
+2. Click **Add New → Project** and pick your `classroombridge` repository.
 3. Under **Environment Variables**, add:
    - Key: `DATABASE_URL`
    - Value: the Neon connection string from step 2.
 4. Click **Deploy**. After about a minute you get a public URL like
-   `https://classbridge.vercel.app` — open it on any device.
+   `https://classroombridge.vercel.app` — open it on any device.
 5. Optional: **Settings → Domains** to attach your own domain.
 
 ### 4. Try it

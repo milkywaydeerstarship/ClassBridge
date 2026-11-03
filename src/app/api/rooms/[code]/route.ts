@@ -23,6 +23,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ code: stri
         name: room.name,
         sourceLang: room.sourceLang,
         hasPin: !!room.pin,
+        isClosed: room.isClosed ?? false,
+        closedAt: room.closedAt,
         createdAt: room.createdAt,
         messageCount: countRes[0]?.n ?? 0,
       },

@@ -16,7 +16,7 @@ function Logo() {
         </svg>
       </div>
       <div className="leading-tight">
-        <p className="font-[Sora] text-lg font-bold tracking-tight text-white">ClassBridge</p>
+        <p className="font-[Sora] text-lg font-bold tracking-tight text-white">Classroom Bridge</p>
         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-300/80">Live translation for school</p>
       </div>
     </div>
@@ -46,16 +46,20 @@ export default function LandingPage() {
 
   const saveSession = (code: string, session: object) => {
     try {
-      localStorage.setItem(`classbridge:${code}`, JSON.stringify(session));
+      localStorage.setItem(`classroombridge:${code}`, JSON.stringify(session));
     } catch { /* ignore */ }
   };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateErr("");
+    const displayName = hostName.trim();
+    if (!displayName) {
+      setCreateErr("Please enter your name to create a room.");
+      return;
+    }
     setCreating(true);
     try {
-      const displayName = hostName.trim() || "Host";
       // Always include the host's own speaking language so listener replies translate back to it.
       const mergedLangs = Array.from(new Set([...(listenLangs.length ? listenLangs : [speakLang]), speakLang]));
       const res = await fetch("/api/rooms", {
@@ -76,6 +80,9 @@ export default function LandingPage() {
         langs: mergedLangs,
         speakLang,
         pin: pin.trim(),
+        isHost: true,
+        hostSecret: data.hostSecret,
+        participantKey: data.participantKey,
         joinedAt: Date.now(),
       });
       router.push(`/room/${data.code}`);
@@ -94,9 +101,13 @@ export default function LandingPage() {
       setJoinErr("Enter the 6-character room code.");
       return;
     }
+    const displayName = joinName.trim();
+    if (!displayName) {
+      setJoinErr("Please enter your name to join.");
+      return;
+    }
     setJoining(true);
     try {
-      const displayName = joinName.trim() || "Guest";
       const res = await fetch(`/api/rooms/${encodeURIComponent(code)}/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -116,6 +127,8 @@ export default function LandingPage() {
         langs: myLangs,
         speakLang: myLangs[0] ?? data.room?.sourceLang ?? "en",
         pin: joinPin.trim(),
+        isHost: false,
+        participantKey: data.participantKey,
         joinedAt: Date.now(),
       });
       router.push(`/room/${code}`);
@@ -241,11 +254,14 @@ export default function LandingPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Your name</label>
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                      Your name <span className="text-cyan-300">*</span>
+                    </label>
                     <input
+                      required
                       value={hostName}
                       onChange={(e) => setHostName(e.target.value)}
-                      placeholder="e.g. Alex"
+                      placeholder="e.g. Ms. Smith"
                       className="w-full rounded-xl border border-white/10 bg-[#0d1426] px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-400/20"
                     />
                   </div>
@@ -291,8 +307,11 @@ export default function LandingPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Your name</label>
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                      Your name <span className="text-cyan-300">*</span>
+                    </label>
                     <input
+                      required
                       value={joinName}
                       onChange={(e) => setJoinName(e.target.value)}
                       placeholder="e.g. María"
@@ -385,7 +404,7 @@ export default function LandingPage() {
         </section>
 
         <footer className="mt-14 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-6 text-xs text-slate-500">
-          <p>ClassBridge — built for teachers, students, and every multilingual classroom.</p>
+          <p>Classroom Bridge — built for teachers, students, and every multilingual classroom.</p>
           <p>Tip: use Chrome or Edge for the best microphone experience.</p>
         </footer>
       </div>

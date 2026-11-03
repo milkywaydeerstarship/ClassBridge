@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, varchar, text, timestamp, boolean, index } from "drizzle-orm/pg-core";
 
 export const rooms = pgTable("rooms", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -6,6 +6,9 @@ export const rooms = pgTable("rooms", {
   name: varchar("name", { length: 120 }).notNull(),
   sourceLang: varchar("source_lang", { length: 12 }).notNull().default("en"),
   pin: varchar("pin", { length: 12 }),
+  hostSecret: varchar("host_secret", { length: 64 }),
+  isClosed: boolean("is_closed").notNull().default(false),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
   liveText: text("live_text"),
   liveSourceLang: varchar("live_source_lang", { length: 12 }),
   liveSpeaker: varchar("live_speaker", { length: 80 }),
@@ -50,7 +53,11 @@ export const presence = pgTable(
       .notNull()
       .references(() => rooms.id, { onDelete: "cascade" }),
     displayName: varchar("display_name", { length: 80 }).notNull(),
+    participantKey: varchar("participant_key", { length: 64 }),
     langs: varchar("langs", { length: 120 }).notNull().default("en"),
+    isMuted: boolean("is_muted").notNull().default(false),
+    isKicked: boolean("is_kicked").notNull().default(false),
+    isHost: boolean("is_host").notNull().default(false),
     lastSeen: timestamp("last_seen", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("presence_room_seen_idx").on(t.roomId, t.lastSeen)]
@@ -59,3 +66,4 @@ export const presence = pgTable(
 export type Room = typeof rooms.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Translation = typeof translations.$inferSelect;
+export type Presence = typeof presence.$inferSelect;

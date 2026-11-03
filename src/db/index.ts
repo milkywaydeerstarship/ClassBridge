@@ -5,8 +5,8 @@ import { Pool } from "pg";
 type Database = NodePgDatabase<Record<string, never>>;
 
 const globalForDb = globalThis as typeof globalThis & {
-  __classbridgePool?: Pool;
-  __classbridgeDb?: Database;
+  __classroombridgePool?: Pool;
+  __classroombridgeDb?: Database;
 };
 
 // The connection is created lazily (on first real use) instead of at import
@@ -15,23 +15,23 @@ const globalForDb = globalThis as typeof globalThis & {
 // variable is set, everything works; until then, requests fail with a clear
 // message instead of breaking the build.
 export function getPool(): Pool {
-  if (!globalForDb.__classbridgePool) {
+  if (!globalForDb.__classroombridgePool) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
       throw new Error(
         "DATABASE_URL is not set. Add it in your hosting dashboard (see DEPLOY.md) and redeploy."
       );
     }
-    globalForDb.__classbridgePool = new Pool({ connectionString });
+    globalForDb.__classroombridgePool = new Pool({ connectionString });
   }
-  return globalForDb.__classbridgePool;
+  return globalForDb.__classroombridgePool;
 }
 
 export function getDb(): Database {
-  if (!globalForDb.__classbridgeDb) {
-    globalForDb.__classbridgeDb = drizzle(getPool());
+  if (!globalForDb.__classroombridgeDb) {
+    globalForDb.__classroombridgeDb = drizzle(getPool());
   }
-  return globalForDb.__classbridgeDb;
+  return globalForDb.__classroombridgeDb;
 }
 
 // Drop-in replacement for the old eager `db` export — all routes keep working
