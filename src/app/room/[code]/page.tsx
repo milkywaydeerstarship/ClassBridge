@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LANGUAGES, langByCode } from "@/lib/languages";
 import { LanguageChips } from "@/components/LanguageChips";
+import { CodeDisplay } from "@/components/CodeDisplay";
 
 declare global {
   interface Window {
@@ -58,6 +59,16 @@ type Session = {
 
 const bcp47 = (code: string) => (code === "auto" ? "en-US" : langByCode(code).bcp47);
 const sourceLabel = (code: string) => (code === "auto" ? "Auto-detect" : langByCode(code).label);
+
+// Caption pacing: how long the speaker's device gathers sentences before
+// sending them to students as one paragraph. Bigger chunks = easier to follow.
+type Pacing = "fast" | "medium" | "slow";
+const PACING: Record<Pacing, { label: string; pauseMs: number; maxChars: number; hint: string }> = {
+  fast: { label: "Sentence by sentence", pauseMs: 1200, maxChars: 220, hint: "a new line after almost every sentence" },
+  medium: { label: "Short paragraphs", pauseMs: 4500, maxChars: 520, hint: "a few sentences grouped together" },
+  slow: { label: "Long paragraphs", pauseMs: 8000, maxChars: 950, hint: "best for slower readers" },
+};
+const isPacing = (v: unknown): v is Pacing => v === "fast" || v === "medium" || v === "slow";
 
 function timeAgo(iso: string): string {
   const d = new Date(iso).getTime();
@@ -122,6 +133,8 @@ export default function RoomPage() {
   const [showOriginal, setShowOriginal] = useState(true);
   const [connected, setConnected] = useState(true);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [showCodeDisplay, setShowCodeDisplay] = useState(false);
+  const closeCodeDisplay = useCallback(() => setShowCodeDisplay(false), []);
 
   // Microphone
   const [listening, setListening] = useState(false);
@@ -134,9 +147,52 @@ export default function RoomPage() {
   const wantListening = useRef(false);
   const lastLivePost = useRef(0);
 
+  // Sentence buffer: finished sentences wait here and go out together as one
+  // paragraph after a pause (or once the paragraph is long enough).
+  const [pacing, setPacing] = useState<Pacing>("medium");
+  const pacingRef = useRef<Pacing>("medium");
+  const bufferRef = useRef("");
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pendingText, setPendingText] = useState("");
+
+  // Reading aids for students
+  const [largeText, setLargeText] = useState(false);
+  const [stickToBottom, setStickToBottom] = useState(true);
+  const [unseenCount, setUnseenCount] = useState(0);
+  const prevMsgCount = useRef(0);
+
   const feedRef = useRef<HTMLDivElement>(null);
   const spokenIds = useRef<Set<string>>(new Set());
   const langsKey = useMemo(() => [...myLangs].sort().join(","), [myLangs]);
+
+  // Remember reading/pacing preferences on this device
+  useEffect(() => {
+    try {
+      const p = localStorage.getItem("classroombridge:pacing");
+      if (isPacing(p)) {
+        setPacing(p);
+        pacingRef.current = p;
+      }
+      if (localStorage.getItem("classroombridge:largeText") === "1") setLargeText(true);
+    } catch { /* ignore */ }
+  }, []);
+
+  const changePacing = (p: Pacing) => {
+    setPacing(p);
+    pacingRef.current = p;
+    try {
+      localStorage.setItem("classroombridge:pacing", p);
+    } catch { /* ignore */ }
+  };
+
+  const toggleLargeText = () => {
+    setLargeText((v) => {
+      try {
+        localStorage.setItem("classroombridge:largeText", v ? "0" : "1");
+      } catch { /* ignore */ }
+      return !v;
+    });
+  };
 
   const isHost = Boolean(session?.isHost && session?.hostSecret);
 
@@ -323,11 +379,35 @@ export default function RoomPage() {
     return () => clearInterval(t);
   }, [heartbeat]);
 
-  // Autoscroll
-  useEffect(() => {
+  // Smart autoscroll: follow new lines only if the reader is already at the
+  // bottom. If they scrolled up to re-read, leave them there and count new lines.
+  const handleFeedScroll = useCallback(() => {
+    const el = feedRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    setStickToBottom(near);
+    if (near) setUnseenCount(0);
+  }, []);
+
+  const jumpToLatest = useCallback(() => {
     const el = feedRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, live?.text]);
+    setStickToBottom(true);
+    setUnseenCount(0);
+  }, []);
+
+  useEffect(() => {
+    const el = feedRef.current;
+    const added = messages.length - prevMsgCount.current;
+    prevMsgCount.current = messages.length;
+    if (!el) return;
+    if (stickToBottom) {
+      el.scrollTop = el.scrollHeight;
+      setUnseenCount(0);
+    } else if (added > 0) {
+      setUnseenCount((n) => n + added);
+    }
+  }, [messages.length, live?.text, stickToBottom]);
 
   // TTS Readout
   const speak = useCallback((text: string, langCode: string) => {
@@ -408,10 +488,10 @@ export default function RoomPage() {
   );
 
   const postLive = useCallback(
-    async (text: string) => {
+    async (text: string, force = false) => {
       if (isMuted || isRoomClosed) return;
       const now = Date.now();
-      if (now - lastLivePost.current < 900) return;
+      if (!force && now - lastLivePost.current < 900) return;
       lastLivePost.current = now;
       try {
         await fetch(`/api/rooms/${encodeURIComponent(code)}/live`, {
@@ -429,6 +509,48 @@ export default function RoomPage() {
     [code, isMuted, isRoomClosed, speakLang, displayName, session?.participantKey]
   );
 
+  // Always-fresh references so the long-lived speech recognition callback never
+  // uses a stale copy of these functions.
+  const sendMessageRef = useRef(sendMessage);
+  const postLiveRef = useRef(postLive);
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+    postLiveRef.current = postLive;
+  }, [sendMessage, postLive]);
+
+  // Send whatever has been gathered as one paragraph.
+  const flushBuffer = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const text = bufferRef.current.trim();
+    bufferRef.current = "";
+    setPendingText("");
+    if (text) void sendMessageRef.current(text);
+  }, []);
+
+  // A finished sentence arrived from the mic: add it to the paragraph and
+  // (re)start the pause timer. Long paragraphs are sent right away.
+  const queueFinal = useCallback(
+    (text: string) => {
+      const clean = text.trim();
+      if (!clean) return;
+      bufferRef.current = bufferRef.current ? `${bufferRef.current} ${clean}` : clean;
+      setPendingText(bufferRef.current);
+      const { pauseMs, maxChars } = PACING[pacingRef.current];
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      if (bufferRef.current.length >= maxChars) {
+        flushBuffer();
+        return;
+      }
+      // keep the live caption showing the whole paragraph so far
+      void postLiveRef.current(bufferRef.current, true);
+      flushTimerRef.current = setTimeout(flushBuffer, pauseMs);
+    },
+    [flushBuffer]
+  );
+
   // Microphone
   const stopMic = useCallback(async () => {
     wantListening.current = false;
@@ -438,10 +560,12 @@ export default function RoomPage() {
     } catch { /* ignore */ }
     recogRef.current = null;
     setInterim("");
+    // send anything still waiting in the paragraph buffer
+    flushBuffer();
     try {
       await fetch(`/api/rooms/${encodeURIComponent(code)}/live`, { method: "DELETE" });
     } catch { /* ignore */ }
-  }, [code]);
+  }, [code, flushBuffer]);
 
   const startMic = useCallback(() => {
     if (isMuted) {
@@ -476,15 +600,17 @@ export default function RoomPage() {
         const r = ev.results[i];
         const transcript = r[0]?.transcript ?? "";
         if (r.isFinal) {
-          const finalText = transcript.trim();
-          if (finalText) void sendMessage(finalText);
+          // finished sentence → joins the paragraph buffer (sent after a pause)
+          queueFinal(transcript);
         } else {
           interimText += transcript;
         }
       }
       const trimmed = interimText.trim();
       setInterim(trimmed);
-      if (trimmed) void postLive(trimmed);
+      // students' live caption shows the whole paragraph so far + what's being said now
+      const liveSoFar = [bufferRef.current, trimmed].filter(Boolean).join(" ");
+      if (trimmed && liveSoFar) void postLiveRef.current(liveSoFar);
     };
     recog.onerror = (ev) => {
       const err = ev?.error ?? "";
@@ -510,11 +636,12 @@ export default function RoomPage() {
     } catch {
       setMicError("Could not start the microphone. Please try again.");
     }
-  }, [isMuted, isRoomClosed, speakLang, primaryLang, sendMessage, postLive]);
+  }, [isMuted, isRoomClosed, speakLang, primaryLang, queueFinal]);
 
   useEffect(
     () => () => {
       wantListening.current = false;
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       try {
         recogRef.current?.abort();
       } catch { /* ignore */ }
@@ -663,7 +790,7 @@ export default function RoomPage() {
       <div className="grid min-h-screen place-items-center px-6">
         <div className="max-w-md rounded-3xl border border-white/10 bg-white/[0.04] p-8 text-center">
           <p className="font-mono text-4xl font-bold text-white">{code}</p>
-          <p className="mt-3 text-lg font-semibold text-white">This classroom doesn't exist</p>
+          <p className="mt-3 text-lg font-semibold text-white">This classroom doesn&apos;t exist</p>
           <p className="mt-1 text-sm text-slate-400">Check the 6-character room code and try again.</p>
           <button
             onClick={() => router.push("/")}
@@ -715,6 +842,17 @@ export default function RoomPage() {
         <div className="absolute -top-32 left-1/2 h-[420px] w-[820px] -translate-x-1/2 rounded-full bg-[radial-gradient(closest-side,rgba(34,211,238,0.16),transparent)] blur-2xl" />
       </div>
 
+      {/* Full-screen class code (Google Classroom-style display) */}
+      {showCodeDisplay ? (
+        <CodeDisplay
+          code={code}
+          roomName={roomInfo?.name ?? `Room ${code}`}
+          inviteLink={inviteLink}
+          hasPin={Boolean(roomInfo?.hasPin)}
+          onClose={closeCodeDisplay}
+        />
+      ) : null}
+
       <div className="relative mx-auto max-w-6xl px-4 pb-10 sm:px-6">
         {/* Notification Toast */}
         {actionNotice && (
@@ -764,16 +902,30 @@ export default function RoomPage() {
 
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
               <button
-                onClick={() => void copyText(code, "code")}
-                className="rounded-lg bg-white/5 px-2 py-1 font-mono text-sm font-bold tracking-[0.25em] text-white transition hover:bg-white/10"
-                title="Copy code"
+                onClick={() => setShowCodeDisplay(true)}
+                className="group inline-flex items-center gap-1.5 rounded-lg bg-white/5 px-2 py-1 font-mono text-sm font-bold tracking-[0.25em] text-white transition hover:bg-white/10"
+                title="Show the code full-screen for the class"
               >
                 {code}
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-slate-400 transition group-hover:text-cyan-200"
+                  aria-hidden="true"
+                >
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                </svg>
               </button>
               <span>·</span>
               <span>{presence.count} in room</span>
               <span>·</span>
-              <span>{messages.length} lines</span>
+              <span>{messages.length} paragraphs</span>
               <span>·</span>
               <span>room: {roomInfo ? sourceLabel(roomInfo.sourceLang) : "…"}</span>
               <span>·</span>
@@ -912,17 +1064,51 @@ export default function RoomPage() {
                 </div>
               ) : null}
 
-              {/* Local Mic Interim Transcription */}
-              {listening && interim ? (
+              {/* Speaker's paragraph-in-progress (gathered sentences + what's being said now) */}
+              {listening && (interim || pendingText) ? (
                 <div className="mb-3 rounded-3xl border border-white/10 bg-white/[0.04] px-5 py-4">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">You are saying…</p>
-                  <p className="mt-1 text-[15px] text-slate-100">{interim}</p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                      {pendingText ? "Gathering your paragraph…" : "You are saying…"}
+                    </p>
+                    {pendingText ? (
+                      <button
+                        type="button"
+                        onClick={flushBuffer}
+                        className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-slate-900 transition hover:bg-cyan-100"
+                        title="Send this paragraph to students right now"
+                      >
+                        Send now →
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-[15px] leading-relaxed text-slate-100">
+                    {pendingText}
+                    {interim ? <span className="text-slate-400"> {interim}</span> : null}
+                  </p>
+                  {pendingText ? (
+                    <p className="mt-1.5 text-[11px] text-slate-500">
+                      Sends automatically after a {Math.round(PACING[pacing].pauseMs / 1000)}-second pause
+                      {" "}or when the paragraph gets long. Students see it live meanwhile.
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
 
               {/* Translation Message Feed */}
+              <div className="relative">
+              {!stickToBottom && unseenCount > 0 ? (
+                <button
+                  type="button"
+                  onClick={jumpToLatest}
+                  className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-white px-4 py-2 text-xs font-bold text-slate-900 shadow-[0_10px_30px_rgba(0,0,0,0.45)] transition hover:bg-cyan-100"
+                >
+                  ↓ {unseenCount} new {unseenCount === 1 ? "paragraph" : "paragraphs"}
+                </button>
+              ) : null}
               <div
                 ref={feedRef}
+                onScroll={handleFeedScroll}
                 className="scroll-slim h-[52vh] min-h-[340px] space-y-3 overflow-y-auto rounded-3xl border border-white/10 bg-black/20 p-3 sm:p-4 lg:h-[56vh]"
               >
                 {messages.length === 0 ? (
@@ -968,9 +1154,20 @@ export default function RoomPage() {
                             </svg>
                           </button>
                         </div>
-                        <p className="mt-2.5 text-[17px] font-medium leading-snug text-white">{primary}</p>
+                        <p
+                          className={`mt-2.5 font-medium text-white ${
+                            largeText ? "text-[22px] leading-relaxed" : "text-[17px] leading-snug"
+                          }`}
+                        >
+                          {primary}
+                        </p>
                         {others.map((l) => (
-                          <p key={l} className="mt-1.5 border-l-2 border-white/10 pl-2.5 text-sm text-slate-300">
+                          <p
+                            key={l}
+                            className={`mt-1.5 border-l-2 border-white/10 pl-2.5 text-slate-300 ${
+                              largeText ? "text-base leading-relaxed" : "text-sm"
+                            }`}
+                          >
                             <span className="mr-1.5 rounded bg-white/10 px-1 py-0.5 text-[10px] font-bold text-slate-200">
                               {langByCode(l).short}
                             </span>
@@ -984,6 +1181,7 @@ export default function RoomPage() {
                     );
                   })
                 )}
+              </div>
               </div>
 
               {/* Composer */}
@@ -1079,6 +1277,24 @@ export default function RoomPage() {
                       <span className="text-[11px] text-slate-500">
                         {isMuted ? "Muted" : listening ? "Mic live" : "Mic ready"} · as <b className="text-slate-300">{displayName}</b>
                       </span>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Caption pacing:</span>
+                      <select
+                        value={pacing}
+                        onChange={(e) => {
+                          if (isPacing(e.target.value)) changePacing(e.target.value);
+                        }}
+                        className="rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs font-semibold text-slate-200 outline-none"
+                        title="How much speech is grouped together before students see it as one paragraph"
+                      >
+                        {(Object.keys(PACING) as Pacing[]).map((p) => (
+                          <option key={p} value={p} className="bg-[#0d1426]">
+                            {PACING[p].label}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[11px] text-slate-500">{PACING[pacing].hint}</span>
                     </div>
                   </div>
 
@@ -1316,6 +1532,24 @@ export default function RoomPage() {
                     </button>
                   </label>
                   <label className="flex cursor-pointer items-center justify-between gap-3">
+                    <span className="text-slate-200">
+                      Large text{" "}
+                      <span className="block text-xs font-normal text-slate-500">easier to read from a distance</span>
+                    </span>
+                    <button
+                      onClick={toggleLargeText}
+                      className={`relative h-6 w-11 shrink-0 rounded-full transition ${
+                        largeText ? "bg-violet-400" : "bg-white/15"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
+                          largeText ? "left-[22px]" : "left-0.5"
+                        }`}
+                      />
+                    </button>
+                  </label>
+                  <label className="flex cursor-pointer items-center justify-between gap-3">
                     <span className="text-slate-200">Show original text</span>
                     <button
                       onClick={() => setShowOriginal(!showOriginal)}
@@ -1350,8 +1584,25 @@ export default function RoomPage() {
               {/* Share Room Card */}
               <div className="rounded-3xl border border-cyan-300/20 bg-cyan-400/[0.06] p-5">
                 <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-200/80">Class Code</p>
-                <p className="mt-2 text-center font-mono text-3xl font-bold tracking-[0.25em] text-white">{code}</p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCodeDisplay(true)}
+                  className="mt-2 w-full rounded-2xl py-1 text-center font-mono text-3xl font-bold tracking-[0.25em] text-white transition hover:bg-white/5"
+                  title="Show the code full-screen for the class"
+                >
+                  {code}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCodeDisplay(true)}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 px-3 py-2.5 text-xs font-bold text-slate-950 shadow-[0_8px_24px_rgba(34,211,238,0.3)] transition hover:brightness-110"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                  </svg>
+                  Display code for class
+                </button>
+                <div className="mt-2 grid grid-cols-2 gap-2">
                   <button
                     onClick={() => void copyText(code, "code")}
                     className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-900 transition hover:bg-slate-100"
